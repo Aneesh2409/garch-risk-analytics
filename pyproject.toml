@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "garch-risk-analytics"
+version = "0.1.0"
+description = "GARCH-based volatility forecasting, VaR/ES backtesting, and option-portfolio risk analytics."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Aneesh Chatterjee" }]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "arch>=6.0",
+    "matplotlib>=3.7",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
