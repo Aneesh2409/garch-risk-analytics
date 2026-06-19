@@ -1,8 +1,7 @@
-"""Central configuration: one home for every magic number.
+"""Central configuration: model constants and the option portfolio definition.
 
-The original notebook scattered ``r = 0.02`` across five cells, redefined
-windows inline, and described the option book as a list of bare dicts. All of
-that now lives here, typed.
+A single home for every model constant and the option book, so nothing is
+hard-coded inline and the portfolio is defined once, with types.
 """
 
 from __future__ import annotations
@@ -39,7 +38,7 @@ class OptionPosition:
     quantity: int
 
 
-# The same six-line book as the original research notebook, now typed.
+# The option book: six lines across the three underlyings.
 DEFAULT_PORTFOLIO: tuple[OptionPosition, ...] = (
     OptionPosition("O1", "S&P500", "call", 1.00, 30, 5),    # ATM call
     OptionPosition("O2", "S&P500", "put", 0.95, 60, 2),     # 5% OTM put

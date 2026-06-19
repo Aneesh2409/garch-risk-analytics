@@ -1,12 +1,10 @@
 """Black-Scholes-Merton pricing and Greeks.
 
-THE ONE CONVENTION (read this before touching anything below)
--------------------------------------------------------------
-Every function in this module obeys a single set of units. The original
-research notebook mixed daily and annualised vol across three different
-pricing functions; that bug silently mispriced everything fed through the
-"annualised" path by a factor of ~sqrt(252). To make that class of error
-impossible, the rules live in exactly one place:
+UNIT CONVENTIONS (read this before touching anything below)
+-----------------------------------------------------------
+Every function in this module obeys a single set of units, defined in one
+place so that daily and annualised volatility are never mixed across pricers
+(a mismatch there misprices options by a factor of ~sqrt(252)):
 
 1. Volatility (``sigma``) is ALWAYS annualised. A daily GARCH/realised sigma
    must be converted with :func:`annualise_vol` before it reaches any pricer.

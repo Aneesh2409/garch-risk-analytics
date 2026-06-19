@@ -1,8 +1,9 @@
 """Tests for the Greeks module.
 
-The headline test reconstructs the original floating-strike behaviour and
-demonstrates, numerically, why it was wrong: under the bug an ATM call's
-delta barely moves as spot rallies; under the fix it climbs toward 1.
+The headline test checks that a call's delta responds to spot moving: with the
+strike fixed at inception it climbs toward 1 as the option goes in the money,
+whereas a strike that re-floats to track spot would leave delta pinned near
+0.5 -- which is why the strike must be fixed.
 """
 
 import numpy as np
@@ -25,11 +26,12 @@ def test_strike_is_fixed_at_inception():
 
 
 def test_fixed_strike_delta_moves_but_floating_strike_does_not():
-    """The core regression test for the original conceptual bug.
+    """Delta must respond to spot; a fixed strike delivers this, a floating
+    one does not.
 
-    Build one ATM call, rally the spot +20% over the horizon at constant
-    vol, and compare the delta path under the FIXED-strike (correct) logic
-    against the old FLOATING-strike (buggy) logic.
+    Build one ATM call, rally the spot +20% over the horizon at constant vol,
+    and compare the delta path under the fixed-strike (correct) logic against
+    a strike that re-floats to track spot (incorrect).
     """
     pos = OptionPosition("X", "S&P500", "call", 1.0, 60, 1)
     S0 = 100.0
@@ -38,23 +40,23 @@ def test_fixed_strike_delta_moves_but_floating_strike_does_not():
     sigma_daily = np.full(n, 0.20 / np.sqrt(252))  # ~20% annualised, constant
     r = 0.02
 
-    # FIXED strike (correct): K pinned at S0.
+    # Fixed strike (correct): K pinned at S0.
     K_fixed = resolve_strike(pos, S0)
     delta_fixed_start = bsm_greeks(spot[0], K_fixed, pos.days_to_expiry,
                                    annualise_vol(sigma_daily[0]), r, "call").delta
     delta_fixed_end = bsm_greeks(spot[-1], K_fixed, pos.days_to_expiry - (n - 1),
                                  annualise_vol(sigma_daily[-1]), r, "call").delta
 
-    # FLOATING strike (the bug): K re-derived from each day's spot.
+    # Floating strike (incorrect): K re-derived from each day's spot.
     delta_float_start = bsm_greeks(spot[0], 1.0 * spot[0], pos.days_to_expiry,
                                    annualise_vol(sigma_daily[0]), r, "call").delta
     delta_float_end = bsm_greeks(spot[-1], 1.0 * spot[-1], pos.days_to_expiry - (n - 1),
                                  annualise_vol(sigma_daily[-1]), r, "call").delta
 
-    # Correct version: delta climbs materially as the call goes ITM.
+    # Fixed strike: delta climbs materially as the call goes ITM.
     assert delta_fixed_end - delta_fixed_start > 0.20
 
-    # Buggy version: delta is essentially pinned (option stays ATM forever);
+    # Floating strike: delta is essentially pinned (option stays ATM forever);
     # any drift comes only from time decay, not from spot moving.
     assert abs(delta_float_end - delta_float_start) < 0.05
 

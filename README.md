@@ -2,8 +2,7 @@
 
 A modular toolkit for **volatility forecasting, tail-risk backtesting, and
 option-portfolio risk analytics** across equities and crypto (S&P 500, NASDAQ,
-BTC-USD). Refactored from research-notebook form into a tested, importable
-package.
+BTC-USD), built as a tested, installable Python package.
 
 > **Status: in active development.** The core pricing and Greeks engine is
 > complete and unit-tested; volatility, VaR/ES, and stress-testing modules are

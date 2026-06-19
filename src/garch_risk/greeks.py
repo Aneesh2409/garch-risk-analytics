@@ -1,22 +1,15 @@
-"""Portfolio Greeks through time -- with the strike pinned at inception.
+"""Portfolio Greeks through time, with strikes fixed at inception.
 
-THE BUG THIS MODULE FIXES
--------------------------
-The original notebook computed the strike as ``K = moneyness * S_t`` *inside
-the daily loop*, i.e. it re-derived the strike from each day's spot. That makes
-every option permanently at-the-money: its delta sits near 0.5 and never
-responds to the underlying moving, which defeats the entire point of tracking
-Greeks over time. (Tellingly, the notebook's mark-to-market function got it
-right -- ``K = moneyness * S_0`` -- so the same notebook held both versions.)
-
-Here the strike is resolved ONCE, on the first day of the horizon, via
-:func:`resolve_strike`, and stays fixed. Delta and gamma then evolve as the
-spot drifts away from that fixed strike, which is the whole story we want to
-show.
+Each position's strike is resolved once, on the first day of the horizon, as
+``K = moneyness * S_0`` (:func:`resolve_strike`), and held constant thereafter.
+Delta and gamma then evolve as the spot drifts away from that fixed strike,
+which is what makes a time series of Greeks meaningful: a strike that tracked
+spot would keep every option permanently at-the-money, so its delta would sit
+near 0.5 and never respond to the underlying moving.
 
 Volatility inputs are DAILY (the natural output of the GARCH / realised-vol
 estimators); annualisation happens here, at the single point where we call
-into the pricer, per the convention documented in :mod:`pricing`.
+into the pricer, per the convention in :mod:`pricing`.
 """
 
 from __future__ import annotations
@@ -31,7 +24,7 @@ _GREEK_COLS = ("Delta", "Gamma", "Vega", "Theta")
 
 
 def resolve_strike(pos: OptionPosition, spot_at_inception: float) -> float:
-    """Pin the strike to inception spot. Called once, never re-floated."""
+    """Pin the strike to the inception spot; called once, never re-floated."""
     return pos.moneyness * spot_at_inception
 
 

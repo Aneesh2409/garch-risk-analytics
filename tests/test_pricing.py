@@ -1,9 +1,8 @@
 """Tests for the pricing module.
 
-These exist mainly to make the original notebook's two silent bugs
-impossible to reintroduce:
-  * mismatched vol units across pricers (daily vs annualised), and
-  * accidental drift in the Greek conventions.
+These pin the two things most likely to drift silently:
+  * the volatility-unit convention (daily vs annualised) across pricers, and
+  * the Greek conventions.
 """
 
 import numpy as np
@@ -47,12 +46,11 @@ def test_put_call_parity():
 
 
 def test_vol_convention_guard():
-    """The original bug: feeding DAILY sigma into an annualised pricer.
+    """Guard the vol convention: a daily sigma must be annualised first.
 
     A daily sigma of ~0.0126 corresponds to ~20% annualised. If a caller
-    forgets to annualise, the price collapses toward intrinsic. This test
-    documents the size of that error so the convention can never silently
-    drift again.
+    forgets to annualise, the price collapses toward intrinsic; this test
+    pins the size of that error so the convention can't silently drift.
     """
     daily_sigma = 0.20 / np.sqrt(TRADING_DAYS_PER_YEAR)  # ~1.26% per day
     correct = bsm_price(100, 100, TRADING_DAYS_PER_YEAR,
@@ -61,8 +59,7 @@ def test_vol_convention_guard():
                       daily_sigma, 0.05, "call")  # forgot to annualise
     assert correct == pytest.approx(10.4506, abs=1e-3)
     # Un-annualised, the ATM call collapses toward its discounted forward
-    # intrinsic (~4.88) -- a ~53% underprice. Documented so the magnitude of
-    # the original bug is on the record, not just its existence.
+    # intrinsic (~4.88) -- a ~53% underprice if the convention is ignored.
     assert wrong == pytest.approx(4.877, abs=1e-2)
     assert wrong < 0.55 * correct
 
