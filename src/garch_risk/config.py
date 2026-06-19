@@ -19,6 +19,19 @@ RANDOM_SEED: int = 42
 
 ASSETS: tuple[str, ...] = ("S&P500", "NASDAQ", "BTC-USD")
 
+# Yahoo Finance tickers for each asset.
+TICKERS: dict[str, str] = {
+    "S&P500": "^GSPC",
+    "NASDAQ": "^IXIC",
+    "BTC-USD": "BTC-USD",
+}
+
+# Data-layer defaults.
+LOOKBACK_YEARS: int = 10        # history pulled when no explicit dates given
+STRIP_WEEKENDS: bool = True     # True: align to the equity trading calendar;
+#                                 False: keep BTC's 7-day calendar, forward-
+#                                 filling equities across weekends/holidays.
+
 
 @dataclass(frozen=True)
 class OptionPosition:
