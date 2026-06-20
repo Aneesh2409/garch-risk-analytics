@@ -17,7 +17,27 @@ import numpy as np
 
 from garch_risk.data import load_returns
 from garch_risk.var_es import backtest_var, rolling_var_es
-from garch_risk.volatility import rolling_garch_forecasts
+from garch_risk.volatility import rolling_garch_forecasts, realised_volatility
+from garch_risk.volatility_eval import evaluate_volatility_forecast
+
+
+def _report_forecast_quality(asset, returns, sigma):
+    # Benchmark: a naive 20-day rolling realised vol, lagged one day so it is a
+    # genuine ex-ante forecast (uses only past returns).
+    bench = realised_volatility(returns, window=20).shift(1)
+    bench = bench.reindex(sigma.index)
+    ev = evaluate_volatility_forecast(returns.reindex(sigma.index), sigma,
+                                      benchmark_sigma=bench)
+    mz = ev.mz
+    print("  Volatility forecast evaluation:")
+    print(f"    Mincer-Zarnowitz: slope={mz.slope:.3f} (se {mz.slope_se:.3f}), "
+          f"intercept={mz.intercept:.2e}")
+    print(f"                      R^2={mz.r_squared:.3f} (low is normal), "
+          f"joint p(a=0,b=1)={mz.joint_p:.4f} -> "
+          f"{'unbiased' if mz.is_unbiased else 'biased'}")
+    print(f"    QLIKE: GARCH={ev.qlike_forecast:.4f}  "
+          f"rolling-vol benchmark={ev.qlike_benchmark:.4f}  -> "
+          f"{'GARCH wins' if ev.beats_benchmark else 'benchmark wins'}")
 
 
 def _report_backtest(asset, returns, sigma, nu, alpha):
@@ -59,6 +79,7 @@ def main() -> None:
         print(f"  Mean ann. vol : {sigma.mean() * np.sqrt(252) * 100:.1f}%")
         print(f"  Fitted dof    : mean {nu.mean():.1f}  "
               f"(range {nu.min():.1f}-{nu.max():.1f})")
+        _report_forecast_quality(asset, rets[asset], sigma)
         for alpha in (0.05, 0.01):
             _report_backtest(asset, rets[asset], sigma, nu, alpha)
 
