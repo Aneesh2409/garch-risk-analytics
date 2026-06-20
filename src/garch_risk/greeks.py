@@ -108,3 +108,35 @@ def daily_portfolio_greeks(portfolio: tuple[OptionPosition, ...],
         rows.append({"Day": t, "Asset": "Total", **total})
 
     return pd.DataFrame(rows).set_index(["Day", "Asset"])
+
+
+def portfolio_greeks_snapshot(portfolio: tuple[OptionPosition, ...],
+                              spots: dict[str, float],
+                              sigmas_daily: dict[str, float], r: float,
+                              strikes: dict[str, float] | None = None
+                              ) -> pd.DataFrame:
+    """Aggregate Greeks for the book at a single market state.
+
+    Returns a DataFrame indexed by underlying (plus a ``Total`` row) with
+    columns Delta/Gamma/Vega/Theta, all quantity-weighted. Strikes are
+    resolved from ``spots`` unless supplied.
+    """
+    if strikes is None:
+        strikes = {pos.id: resolve_strike(pos, spots[pos.underlying])
+                   for pos in portfolio}
+
+    by_asset: dict[str, dict[str, float]] = {}
+    for pos in portfolio:
+        g = position_greeks(pos, spots[pos.underlying], strikes[pos.id],
+                            pos.days_to_expiry, sigmas_daily[pos.underlying], r)
+        acc = by_asset.setdefault(pos.underlying,
+                                  dict.fromkeys(_GREEK_COLS, 0.0))
+        acc["Delta"] += g.delta
+        acc["Gamma"] += g.gamma
+        acc["Vega"] += g.vega
+        acc["Theta"] += g.theta
+
+    rows = [{"Asset": a, **vals} for a, vals in by_asset.items()]
+    total = {c: sum(by_asset[a][c] for a in by_asset) for c in _GREEK_COLS}
+    rows.append({"Asset": "Total", **total})
+    return pd.DataFrame(rows).set_index("Asset")

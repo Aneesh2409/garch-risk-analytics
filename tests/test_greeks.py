@@ -104,3 +104,23 @@ def test_expired_positions_stop_contributing():
     # Day 4 still active (days_remaining = 1), day 5 expired.
     assert df.loc[(4, "Total"), "Delta"] != 0.0
     assert df.loc[(5, "Total"), "Delta"] == 0.0
+
+
+def test_portfolio_greeks_snapshot():
+    from garch_risk.greeks import portfolio_greeks_snapshot
+    book = (
+        OptionPosition("O1", "S&P500", "call", 1.0, 30, 5),
+        OptionPosition("O2", "NASDAQ", "put", 1.0, 30, -3),
+    )
+    spots = {"S&P500": 4000.0, "NASDAQ": 14000.0, "BTC-USD": 60000.0}
+    sigmas = {a: 0.20 / np.sqrt(252) for a in spots}
+    snap = portfolio_greeks_snapshot(book, spots, sigmas, 0.02)
+    assert list(snap.columns) == ["Delta", "Gamma", "Vega", "Theta"]
+    assert "Total" in snap.index
+    # Total equals the sum across the asset rows.
+    asset_rows = snap.drop("Total")
+    for col in ("Delta", "Gamma", "Vega", "Theta"):
+        assert snap.loc["Total", col] == pytest.approx(asset_rows[col].sum(), abs=1e-9)
+    # A long call gives positive delta, a short put gives positive delta too.
+    assert snap.loc["S&P500", "Delta"] > 0
+    assert snap.loc["NASDAQ", "Delta"] > 0
