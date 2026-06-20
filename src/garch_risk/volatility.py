@@ -53,6 +53,46 @@ def realised_volatility(returns: pd.Series | pd.DataFrame,
     return returns.rolling(window, min_periods=1).std()
 
 
+def _rolling_garch(returns: pd.Series, window: int, refit_every: int,
+                   dist: str) -> pd.DataFrame:
+    """Core rolling fit: returns a DataFrame of daily ``sigma`` and ``nu``.
+
+    ``nu`` is the fitted Student-t degrees of freedom (NaN when ``dist`` is
+    not ``"t"``), carried forward between refits alongside the other params.
+    """
+    if window < 2:
+        raise ValueError("window must be at least 2")
+    if refit_every < 1:
+        raise ValueError("refit_every must be at least 1")
+
+    scaled = returns.to_numpy(dtype=float) * _FIT_SCALE
+    n = len(scaled)
+    if n <= window:
+        raise ValueError(f"need more than {window} observations, got {n}")
+
+    sigmas: list[float] = []
+    nus: list[float] = []
+    params = None
+
+    for step, t in enumerate(range(window, n)):
+        train = scaled[t - window:t]
+        model = arch_model(train, vol="Garch", p=1, o=1, q=1,
+                           mean="Zero", dist=dist)
+
+        if params is None or step % refit_every == 0:
+            res = model.fit(disp="off")          # re-estimate parameters
+            params = res.params
+        else:
+            res = model.fix(params)              # hold params, roll variance
+
+        fc = res.forecast(horizon=1, reindex=False)
+        sigmas.append(np.sqrt(fc.variance.values[-1, 0]) / _FIT_SCALE)
+        nus.append(float(params["nu"]) if dist == "t" else np.nan)
+
+    return pd.DataFrame({"sigma": sigmas, "nu": nus},
+                        index=returns.index[window:])
+
+
 def rolling_garch_volatility(returns: pd.Series,
                              window: int = GARCH_WINDOW,
                              refit_every: int = 21,
@@ -78,37 +118,23 @@ def rolling_garch_volatility(returns: pd.Series,
         Daily volatility forecasts (decimal units), indexed by the day each
         forecast is *for* (i.e. ``returns.index[window:]``).
     """
-    if window < 2:
-        raise ValueError("window must be at least 2")
-    if refit_every < 1:
-        raise ValueError("refit_every must be at least 1")
+    out = _rolling_garch(returns, window, refit_every, dist)
+    return out["sigma"].rename(returns.name)
 
-    scaled = returns.to_numpy(dtype=float) * _FIT_SCALE
-    n = len(scaled)
-    if n <= window:
-        raise ValueError(
-            f"need more than {window} observations, got {n}"
-        )
 
-    sigmas: list[float] = []
-    params = None
+def rolling_garch_forecasts(returns: pd.Series,
+                            window: int = GARCH_WINDOW,
+                            refit_every: int = 21,
+                            dist: str = "t") -> pd.DataFrame:
+    """Rolling forecasts of both volatility and fitted Student-t dof.
 
-    for step, t in enumerate(range(window, n)):
-        train = scaled[t - window:t]
-        model = arch_model(train, vol="Garch", p=1, o=1, q=1,
-                           mean="Zero", dist=dist)
-
-        if params is None or step % refit_every == 0:
-            res = model.fit(disp="off")          # re-estimate parameters
-            params = res.params
-        else:
-            res = model.fix(params)              # hold params, roll variance
-
-        fc = res.forecast(horizon=1, reindex=False)
-        sigma = np.sqrt(fc.variance.values[-1, 0]) / _FIT_SCALE
-        sigmas.append(sigma)
-
-    return pd.Series(sigmas, index=returns.index[window:], name=returns.name)
+    Returns a DataFrame with columns ``sigma`` (daily volatility) and ``nu``
+    (the fitted degrees of freedom, NaN for non-t distributions), indexed by
+    the day each forecast is *for*. Feeding ``nu`` into the VaR estimator
+    makes the loss distribution consistent with the volatility model's own
+    innovations, rather than relying on a fixed dof.
+    """
+    return _rolling_garch(returns, window, refit_every, dist)
 
 
 def garch_volatility_by_asset(returns: pd.DataFrame,

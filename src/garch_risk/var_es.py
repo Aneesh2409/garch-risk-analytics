@@ -90,21 +90,39 @@ def monte_carlo_var_es(sigma: float, alpha: float = 0.05,
 
 def rolling_var_es(sigma: pd.Series, alpha: float = 0.05,
                    n_sims: int = N_SIMULATIONS, dist: str = "t",
-                   dof: float = 5.0, seed: int = RANDOM_SEED) -> pd.DataFrame:
+                   dof: float | pd.Series = 5.0,
+                   seed: int = RANDOM_SEED) -> pd.DataFrame:
     """VaR and ES for each day in a volatility-forecast series.
 
-    The standardised tail quantiles are estimated once and scaled by each
-    day's ``sigma`` (a single simulated sample is reused across days so the
-    risk path reflects volatility dynamics, not day-to-day Monte-Carlo noise).
+    The standardised tail quantiles are estimated by simulation and scaled by
+    each day's ``sigma``. ``dof`` may be a scalar or a Series aligned to
+    ``sigma``: passing the GARCH-fitted dof (a Series) makes the loss
+    distribution consistent with the volatility model's own innovations
+    instead of relying on a fixed value. Standardised figures are computed
+    once per distinct dof, so a per-day dof stays cheap.
 
     Returns a DataFrame indexed like ``sigma`` with columns ``VaR`` and ``ES``.
     """
     rng = np.random.default_rng(seed)
-    z_var, z_es = _standardised_var_es(alpha, n_sims, dist, dof, rng)
-    return pd.DataFrame(
-        {"VaR": sigma.to_numpy() * z_var, "ES": sigma.to_numpy() * z_es},
-        index=sigma.index,
-    )
+    sig = sigma.to_numpy()
+
+    if np.isscalar(dof):
+        z_var, z_es = _standardised_var_es(alpha, n_sims, dist, float(dof), rng)
+        return pd.DataFrame({"VaR": sig * z_var, "ES": sig * z_es},
+                            index=sigma.index)
+
+    # Per-day dof: reuse the standardised tail figures for repeated dof values.
+    dof_vals = (pd.Series(dof).reindex(sigma.index).ffill().bfill().to_numpy())
+    cache: dict[float, tuple[float, float]] = {}
+    z_var = np.empty(len(sig))
+    z_es = np.empty(len(sig))
+    for i, d in enumerate(dof_vals):
+        key = round(float(d), 2)
+        if key not in cache:
+            cache[key] = _standardised_var_es(alpha, n_sims, dist, key, rng)
+        z_var[i], z_es[i] = cache[key]
+    return pd.DataFrame({"VaR": sig * z_var, "ES": sig * z_es},
+                        index=sigma.index)
 
 
 # --- Coverage backtests -------------------------------------------------------

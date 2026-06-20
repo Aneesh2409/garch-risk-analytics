@@ -93,6 +93,38 @@ def test_rolling_var_es_alignment_and_sign():
     assert out["VaR"].iloc[-1] < out["VaR"].iloc[0]
 
 
+def test_rolling_var_es_scalar_dof_unchanged():
+    """A constant dof Series must reproduce the scalar-dof result exactly."""
+    idx = pd.bdate_range("2020-01-01", periods=30)
+    sigma = pd.Series(np.linspace(0.01, 0.02, 30), index=idx, name="S")
+    scalar = rolling_var_es(sigma, alpha=0.05, dist="t", dof=5.0, seed=4)
+    series = rolling_var_es(sigma, alpha=0.05, dist="t",
+                            dof=pd.Series(5.0, index=idx), seed=4)
+    pd.testing.assert_frame_equal(scalar, series)
+
+
+def test_rolling_var_es_per_day_dof_varies():
+    """Different dof per segment changes the VaR/sigma ratio between segments."""
+    idx = pd.bdate_range("2020-01-01", periods=40)
+    sigma = pd.Series(0.02, index=idx, name="S")
+    dof = pd.Series([4.0] * 20 + [12.0] * 20, index=idx)
+    out = rolling_var_es(sigma, alpha=0.01, dist="t", dof=dof, n_sims=400_000)
+    ratio_low_dof = out["VaR"].iloc[0] / 0.02     # dof=4 (fatter tail at 1%)
+    ratio_high_dof = out["VaR"].iloc[-1] / 0.02   # dof=12
+    # At 1%, lower dof gives the more extreme quantile.
+    assert ratio_low_dof < ratio_high_dof
+
+
+def test_rolling_var_es_dof_series_alignment():
+    idx = pd.bdate_range("2020-01-01", periods=10)
+    sigma = pd.Series(0.02, index=idx, name="S")
+    dof = pd.Series(6.0, index=idx)
+    out = rolling_var_es(sigma, alpha=0.05, dist="t", dof=dof)
+    pd.testing.assert_index_equal(out.index, idx)
+    assert (out["VaR"] < 0).all()
+    assert (out["ES"] <= out["VaR"]).all()
+
+
 def test_dof_too_low_raises():
     with pytest.raises(ValueError):
         monte_carlo_var_es(0.02, 0.05, dist="t", dof=2)

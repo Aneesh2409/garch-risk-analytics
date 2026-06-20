@@ -17,7 +17,23 @@ import numpy as np
 
 from garch_risk.data import load_returns
 from garch_risk.var_es import backtest_var, rolling_var_es
-from garch_risk.volatility import rolling_garch_volatility
+from garch_risk.volatility import rolling_garch_forecasts
+
+
+def _report_backtest(asset, returns, sigma, nu, alpha):
+    ve = rolling_var_es(sigma, alpha=alpha, dist="t", dof=nu, n_sims=100_000)
+    res = backtest_var(returns, ve["VaR"], alpha=alpha)
+    conf = int(round((1 - alpha) * 100))
+    print(f"  {conf}% VaR backtest over {res.n_obs} days:")
+    print(f"    Breaches    : {res.n_breaches} "
+          f"(rate {res.observed_rate * 100:.2f}%, expected {alpha * 100:.2f}%)")
+    print(f"    Kupiec      : LR={res.kupiec_lr:6.3f}  p={res.kupiec_p:.4f}"
+          f"  -> {'PASS' if res.kupiec_pass else 'FAIL'}")
+    print(f"    Independence: LR={res.independence_lr:6.3f}  "
+          f"p={res.independence_p:.4f}  -> "
+          f"{'PASS' if res.independence_pass else 'FAIL'}")
+    print(f"    Cond. cover.: LR={res.cc_lr:6.3f}  p={res.cc_p:.4f}"
+          f"  -> {'PASS' if res.cc_pass else 'FAIL'}")
 
 
 def main() -> None:
@@ -37,23 +53,14 @@ def main() -> None:
         print("\n" + "-" * 64)
         print(f"Asset: {asset}")
         print("Fitting rolling GJR-GARCH(1,1)-t (window=365, refit_every=21)...")
-        sigma = rolling_garch_volatility(rets[asset], window=365, refit_every=21)
+        fc = rolling_garch_forecasts(rets[asset], window=365, refit_every=21)
+        sigma, nu = fc["sigma"], fc["nu"]
         print(f"  Forecast days : {len(sigma)}")
         print(f"  Mean ann. vol : {sigma.mean() * np.sqrt(252) * 100:.1f}%")
-
-        ve = rolling_var_es(sigma, alpha=0.05, dist="t", dof=5)
-        res = backtest_var(rets[asset], ve["VaR"], alpha=0.05)
-
-        print(f"  95% VaR backtest over {res.n_obs} days:")
-        print(f"    Breaches    : {res.n_breaches} "
-              f"(rate {res.observed_rate * 100:.2f}%, expected 5.00%)")
-        print(f"    Kupiec      : LR={res.kupiec_lr:6.3f}  p={res.kupiec_p:.4f}"
-              f"  -> {'PASS' if res.kupiec_pass else 'FAIL'}")
-        print(f"    Independence: LR={res.independence_lr:6.3f}  "
-              f"p={res.independence_p:.4f}  -> "
-              f"{'PASS' if res.independence_pass else 'FAIL'}")
-        print(f"    Cond. cover.: LR={res.cc_lr:6.3f}  p={res.cc_p:.4f}"
-              f"  -> {'PASS' if res.cc_pass else 'FAIL'}")
+        print(f"  Fitted dof    : mean {nu.mean():.1f}  "
+              f"(range {nu.min():.1f}-{nu.max():.1f})")
+        for alpha in (0.05, 0.01):
+            _report_backtest(asset, rets[asset], sigma, nu, alpha)
 
     print("\n" + "=" * 64)
     print("Smoke test complete.")
