@@ -53,12 +53,31 @@ def realised_volatility(returns: pd.Series | pd.DataFrame,
     return returns.rolling(window, min_periods=1).std()
 
 
-def _rolling_garch(returns: pd.Series, window: int, refit_every: int,
-                   dist: str) -> pd.DataFrame:
-    """Core rolling fit: returns a DataFrame of daily ``sigma`` and ``nu``.
+def _shape_params(params: pd.Series, dist: str) -> tuple[float, float]:
+    """Extract ``(dof_like, skew)`` from a fitted arch parameter vector.
 
-    ``nu`` is the fitted Student-t degrees of freedom (NaN when ``dist`` is
-    not ``"t"``), carried forward between refits alongside the other params.
+    ``dof_like`` is the t-style tail parameter -- ``nu`` for Student-t,
+    ``eta`` for Hansen's skew-t -- and feeds the VaR estimator's ``dof``.
+    ``skew`` is the asymmetry parameter (``lambda`` for skew-t), NaN when the
+    distribution has none. Both NaN for ``normal``.
+    """
+    if dist == "t":
+        return float(params["nu"]), float("nan")
+    if dist == "skewt":
+        return float(params["eta"]), float(params["lambda"])
+    return float("nan"), float("nan")
+
+
+def _rolling_garch(returns: pd.Series, window: int, refit_every: int,
+                   dist: str, p: int = 1, o: int = 1, q: int = 1
+                   ) -> pd.DataFrame:
+    """Core rolling fit: a DataFrame of daily ``sigma``, ``nu`` and ``skew``.
+
+    ``nu`` carries the t-style tail parameter (``nu`` for t, ``eta`` for
+    skew-t); ``skew`` carries the skew-t asymmetry (``lambda``), NaN otherwise.
+    Both are carried forward between refits alongside the variance parameters.
+    ``p``/``o``/``q`` are the GARCH orders; the defaults reproduce the original
+    GJR-GARCH(1,1) fit exactly.
     """
     if window < 2:
         raise ValueError("window must be at least 2")
@@ -72,11 +91,12 @@ def _rolling_garch(returns: pd.Series, window: int, refit_every: int,
 
     sigmas: list[float] = []
     nus: list[float] = []
+    skews: list[float] = []
     params = None
 
     for step, t in enumerate(range(window, n)):
         train = scaled[t - window:t]
-        model = arch_model(train, vol="Garch", p=1, o=1, q=1,
+        model = arch_model(train, vol="Garch", p=p, o=o, q=q,
                            mean="Zero", dist=dist)
 
         if params is None or step % refit_every == 0:
@@ -87,17 +107,20 @@ def _rolling_garch(returns: pd.Series, window: int, refit_every: int,
 
         fc = res.forecast(horizon=1, reindex=False)
         sigmas.append(np.sqrt(fc.variance.values[-1, 0]) / _FIT_SCALE)
-        nus.append(float(params["nu"]) if dist == "t" else np.nan)
+        dof_like, skew = _shape_params(params, dist)
+        nus.append(dof_like)
+        skews.append(skew)
 
-    return pd.DataFrame({"sigma": sigmas, "nu": nus},
+    return pd.DataFrame({"sigma": sigmas, "nu": nus, "skew": skews},
                         index=returns.index[window:])
 
 
 def rolling_garch_volatility(returns: pd.Series,
                              window: int = GARCH_WINDOW,
                              refit_every: int = 21,
-                             dist: str = "t") -> pd.Series:
-    """One-step-ahead daily volatility from a rolling GJR-GARCH(1,1).
+                             dist: str = "t",
+                             p: int = 1, o: int = 1, q: int = 1) -> pd.Series:
+    """One-step-ahead daily volatility from a rolling GJR-GARCH(p,o,q).
 
     Parameters
     ----------
@@ -110,7 +133,10 @@ def rolling_garch_volatility(returns: pd.Series,
         parameters are held fixed and only the conditional-variance recursion
         is rolled forward. ``1`` reproduces full daily refitting.
     dist
-        Innovation distribution passed to ``arch`` (``"t"`` for fat tails).
+        Innovation distribution passed to ``arch`` (``"t"`` for fat tails,
+        ``"skewt"`` for fat + asymmetric tails).
+    p, o, q
+        GARCH orders. Defaults ``(1, 1, 1)`` reproduce the original fit.
 
     Returns
     -------
@@ -118,31 +144,36 @@ def rolling_garch_volatility(returns: pd.Series,
         Daily volatility forecasts (decimal units), indexed by the day each
         forecast is *for* (i.e. ``returns.index[window:]``).
     """
-    out = _rolling_garch(returns, window, refit_every, dist)
+    out = _rolling_garch(returns, window, refit_every, dist, p, o, q)
     return out["sigma"].rename(returns.name)
 
 
 def rolling_garch_forecasts(returns: pd.Series,
                             window: int = GARCH_WINDOW,
                             refit_every: int = 21,
-                            dist: str = "t") -> pd.DataFrame:
-    """Rolling forecasts of both volatility and fitted Student-t dof.
+                            dist: str = "t",
+                            p: int = 1, o: int = 1, q: int = 1) -> pd.DataFrame:
+    """Rolling forecasts of volatility and the fitted innovation shape.
 
-    Returns a DataFrame with columns ``sigma`` (daily volatility) and ``nu``
-    (the fitted degrees of freedom, NaN for non-t distributions), indexed by
-    the day each forecast is *for*. Feeding ``nu`` into the VaR estimator
-    makes the loss distribution consistent with the volatility model's own
-    innovations, rather than relying on a fixed dof.
+    Returns a DataFrame indexed by the day each forecast is *for*, with columns
+    ``sigma`` (daily volatility), ``nu`` (the t-style tail parameter -- ``nu``
+    for Student-t, ``eta`` for skew-t; NaN for ``normal``) and ``skew`` (the
+    skew-t ``lambda``; NaN otherwise). Feeding ``nu`` (and ``skew`` for
+    skew-t) into the VaR estimator makes the loss distribution consistent with
+    the volatility model's own innovations rather than a fixed shape.
     """
-    return _rolling_garch(returns, window, refit_every, dist)
+    return _rolling_garch(returns, window, refit_every, dist, p, o, q)
 
 
 def garch_volatility_by_asset(returns: pd.DataFrame,
                               window: int = GARCH_WINDOW,
                               refit_every: int = 21,
-                              dist: str = "t") -> dict[str, pd.Series]:
+                              dist: str = "t",
+                              p: int = 1, o: int = 1, q: int = 1
+                              ) -> dict[str, pd.Series]:
     """Run :func:`rolling_garch_volatility` for each column of ``returns``."""
     return {
-        col: rolling_garch_volatility(returns[col], window, refit_every, dist)
+        col: rolling_garch_volatility(returns[col], window, refit_every,
+                                      dist, p, o, q)
         for col in returns.columns
     }

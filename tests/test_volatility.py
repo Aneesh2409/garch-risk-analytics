@@ -112,15 +112,17 @@ def test_by_asset_wrapper():
 
 
 def test_garch_forecasts_returns_sigma_and_nu():
-    """rolling_garch_forecasts exposes both volatility and fitted dof."""
+    """rolling_garch_forecasts exposes volatility, fitted dof, and skew."""
     from garch_risk.volatility import rolling_garch_forecasts
     r = _synthetic_returns(n=400)
     fc = rolling_garch_forecasts(r, window=250, refit_every=21)
-    assert list(fc.columns) == ["sigma", "nu"]
+    assert list(fc.columns) == ["sigma", "nu", "skew"]
     assert (fc["sigma"] > 0).all()
     # Fitted Student-t dof must exceed 2 (finite variance) and be finite.
     assert (fc["nu"] > 2).all()
     assert np.isfinite(fc["nu"]).all()
+    # Student-t has no asymmetry parameter -> the skew column is all-NaN.
+    assert fc["skew"].isna().all()
     # The sigma column matches the dedicated volatility function.
     sig = rolling_garch_volatility(r, window=250, refit_every=21)
     pd.testing.assert_series_equal(fc["sigma"].rename(r.name), sig)
@@ -131,6 +133,7 @@ def test_garch_forecasts_normal_has_nan_dof():
     r = _synthetic_returns(n=300)
     fc = rolling_garch_forecasts(r, window=250, refit_every=21, dist="normal")
     assert fc["nu"].isna().all()
+    assert fc["skew"].isna().all()   # normal has neither dof nor skew
 
 
 def test_window_too_large_raises():

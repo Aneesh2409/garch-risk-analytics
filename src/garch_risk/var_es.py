@@ -39,21 +39,36 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from arch.univariate import SkewStudent
 from scipy.stats import chi2
 
 from .config import N_SIMULATIONS, RANDOM_SEED
+
+# Hansen (1994) skew-t, via arch. Stateless: ``ppf`` is a pure function of
+# (uniforms, [eta, lambda]) and returns zero-mean, unit-variance draws, so a
+# single shared instance is reused for every skew-t draw.
+_SKEWT = SkewStudent()
 
 
 # --- Monte-Carlo VaR / ES -----------------------------------------------------
 
 def _standardised_innovations(n_sims: int, dist: str, dof: float,
-                              rng: np.random.Generator) -> np.ndarray:
+                              rng: np.random.Generator,
+                              skew: float = 0.0) -> np.ndarray:
     """Draw unit-variance innovations from the chosen distribution.
 
     A raw Student-t with ``dof`` degrees of freedom has variance
     ``dof / (dof - 2)``; we rescale by ``sqrt((dof - 2) / dof)`` so the
     innovations have unit variance and a day's volatility forecast is exactly
     the standard deviation of its loss distribution.
+
+    For ``dist="skewt"`` (Hansen's skew-t), ``dof`` is the tail parameter
+    (arch's ``eta``, > 2) and ``skew`` is the asymmetry parameter (arch's
+    ``lambda``, in (-1, 1); negative = left-skewed). The draw is produced by
+    pushing this generator's own uniforms through arch's standardised inverse
+    CDF, so it stays zero-mean / unit-variance and respects the seed without
+    hand-rolling Hansen's standardisation. ``skew`` is ignored by the
+    ``normal`` and ``t`` branches, which are left exactly as before.
     """
     if dist == "normal":
         return rng.standard_normal(n_sims)
@@ -61,13 +76,21 @@ def _standardised_innovations(n_sims: int, dist: str, dof: float,
         if dof <= 2:
             raise ValueError("Student-t needs dof > 2 for finite variance")
         return rng.standard_t(dof, n_sims) * np.sqrt((dof - 2) / dof)
-    raise ValueError(f"unknown dist {dist!r}; use 'normal' or 't'")
+    if dist == "skewt":
+        if dof <= 2:
+            raise ValueError("skew-t needs dof (eta) > 2 for finite variance")
+        if not -1.0 < skew < 1.0:
+            raise ValueError("skew-t skew (lambda) must lie in (-1, 1)")
+        u = rng.random(n_sims)
+        return _SKEWT.ppf(u, np.array([float(dof), float(skew)]))
+    raise ValueError(f"unknown dist {dist!r}; use 'normal', 't' or 'skewt'")
 
 
 def _standardised_var_es(alpha: float, n_sims: int, dist: str, dof: float,
-                         rng: np.random.Generator) -> tuple[float, float]:
+                         rng: np.random.Generator,
+                         skew: float = 0.0) -> tuple[float, float]:
     """Standardised (unit-vol) VaR and ES quantiles at level ``alpha``."""
-    z = _standardised_innovations(n_sims, dist, dof, rng)
+    z = _standardised_innovations(n_sims, dist, dof, rng, skew)
     var = float(np.quantile(z, alpha))
     tail = z[z <= var]
     es = float(tail.mean()) if tail.size else var
@@ -76,22 +99,24 @@ def _standardised_var_es(alpha: float, n_sims: int, dist: str, dof: float,
 
 def monte_carlo_var_es(sigma: float, alpha: float = 0.05,
                        n_sims: int = N_SIMULATIONS, dist: str = "t",
-                       dof: float = 5.0, seed: int = RANDOM_SEED
-                       ) -> tuple[float, float]:
+                       dof: float = 5.0, seed: int = RANDOM_SEED,
+                       skew: float = 0.0) -> tuple[float, float]:
     """One-day VaR and ES for a single volatility forecast ``sigma``.
 
     Returns ``(var, es)`` as left-tail returns (negative). ES is at least as
-    extreme as VaR.
+    extreme as VaR. ``skew`` is used only when ``dist="skewt"`` (Hansen's
+    lambda); it is ignored for ``normal`` and ``t``.
     """
     rng = np.random.default_rng(seed)
-    z_var, z_es = _standardised_var_es(alpha, n_sims, dist, dof, rng)
+    z_var, z_es = _standardised_var_es(alpha, n_sims, dist, dof, rng, skew)
     return sigma * z_var, sigma * z_es
 
 
 def rolling_var_es(sigma: pd.Series, alpha: float = 0.05,
                    n_sims: int = N_SIMULATIONS, dist: str = "t",
                    dof: float | pd.Series = 5.0,
-                   seed: int = RANDOM_SEED) -> pd.DataFrame:
+                   seed: int = RANDOM_SEED,
+                   skew: float | pd.Series = 0.0) -> pd.DataFrame:
     """VaR and ES for each day in a volatility-forecast series.
 
     The standardised tail quantiles are estimated by simulation and scaled by
@@ -99,27 +124,44 @@ def rolling_var_es(sigma: pd.Series, alpha: float = 0.05,
     ``sigma``: passing the GARCH-fitted dof (a Series) makes the loss
     distribution consistent with the volatility model's own innovations
     instead of relying on a fixed value. Standardised figures are computed
-    once per distinct dof, so a per-day dof stays cheap.
+    once per distinct shape, so a per-day shape stays cheap.
+
+    ``skew`` (used only when ``dist="skewt"``) follows the same scalar-or-Series
+    rule and pairs with ``dof`` as Hansen's (eta, lambda). For ``normal`` and
+    ``t`` it is ignored and the draw sequence is identical to before.
 
     Returns a DataFrame indexed like ``sigma`` with columns ``VaR`` and ``ES``.
     """
     rng = np.random.default_rng(seed)
     sig = sigma.to_numpy()
 
-    if np.isscalar(dof):
-        z_var, z_es = _standardised_var_es(alpha, n_sims, dist, float(dof), rng)
+    # Fast path: both shape params constant. Identical to the original scalar
+    # path for normal/t (skew defaults to 0.0 and is unused there).
+    if np.isscalar(dof) and np.isscalar(skew):
+        z_var, z_es = _standardised_var_es(alpha, n_sims, dist, float(dof),
+                                           rng, float(skew))
         return pd.DataFrame({"VaR": sig * z_var, "ES": sig * z_es},
                             index=sigma.index)
 
-    # Per-day dof: reuse the standardised tail figures for repeated dof values.
-    dof_vals = (pd.Series(dof).reindex(sigma.index).ffill().bfill().to_numpy())
-    cache: dict[float, tuple[float, float]] = {}
+    # Per-day shape: align dof and skew to sigma, cache by (dof, skew). With a
+    # scalar skew of 0.0 the key reduces to dof alone, so the cache hit/miss
+    # pattern -- and therefore the RNG draw sequence -- matches the original
+    # per-day-dof path exactly.
+    def _as_vals(x: float | pd.Series) -> np.ndarray:
+        if np.isscalar(x):
+            return np.full(len(sig), float(x))
+        return pd.Series(x).reindex(sigma.index).ffill().bfill().to_numpy()
+
+    dof_vals = _as_vals(dof)
+    skew_vals = _as_vals(skew)
+    cache: dict[tuple[float, float], tuple[float, float]] = {}
     z_var = np.empty(len(sig))
     z_es = np.empty(len(sig))
-    for i, d in enumerate(dof_vals):
-        key = round(float(d), 2)
+    for i in range(len(sig)):
+        key = (round(float(dof_vals[i]), 2), round(float(skew_vals[i]), 2))
         if key not in cache:
-            cache[key] = _standardised_var_es(alpha, n_sims, dist, key, rng)
+            cache[key] = _standardised_var_es(alpha, n_sims, dist, key[0],
+                                              rng, key[1])
         z_var[i], z_es[i] = cache[key]
     return pd.DataFrame({"VaR": sig * z_var, "ES": sig * z_es},
                         index=sigma.index)
