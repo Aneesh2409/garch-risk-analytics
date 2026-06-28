@@ -222,3 +222,127 @@ def plot_risk_dashboard(sigma: pd.Series, returns: pd.Series, var: pd.Series,
     fig.suptitle(suptitle, fontsize=14, fontweight="bold", x=0.01, ha="left")
     fig.tight_layout()
     return fig
+
+
+# --- Walk-forward validation -------------------------------------------------
+# These consume the result objects from :mod:`garch_risk.walkforward`. They are
+# duck-typed on the public attributes of ``AssetWalkForward`` (``folds``,
+# ``*_backtests``, ``per_fold_breach_rate*``, ``frozen_spec``) so this module
+# stays free of any import from the walk-forward layer.
+
+_DIST_COLOUR = {"t": _C["primary"], "skewt": _C["accent"], "normal": _C["muted"]}
+
+
+def plot_walkforward_backtest(results: dict, alphas: tuple[float, ...] = (0.05, 0.01),
+                              title: str = "Pooled out-of-sample breach rates"
+                              ) -> Figure:
+    """Pooled OOS breach rate per asset for the baseline, frozen and reselected
+    runs, one panel per confidence level.
+
+    ``results`` maps asset name -> walk-forward result. The dashed line marks the
+    nominal rate; bars above it over-breach. The baseline (original symmetric-t
+    spec) versus frozen (selected spec) contrast is the headline of the panel.
+    """
+    assets = list(results)
+    fig, axes = plt.subplots(1, len(alphas), figsize=(5.2 * len(alphas), 4.4),
+                             squeeze=False)
+    width = 0.26
+    runs = (("baseline", "baseline_backtests", _C["muted"]),
+            ("frozen", "frozen_backtests", _C["primary"]),
+            ("reselected", "reselected_backtests", _C["good"]))
+    x = np.arange(len(assets))
+    for ax, alpha in zip(axes.ravel(), alphas):
+        for k, (label, attr, colour) in enumerate(runs):
+            rates = [getattr(results[a], attr)[alpha].observed_rate * 100
+                     for a in assets]
+            ax.bar(x + (k - 1) * width, rates, width, label=label,
+                   color=colour, zorder=3)
+        ax.axhline(alpha * 100, color=_C["bad"], linestyle="--", linewidth=1.2,
+                   zorder=4, label=f"nominal {alpha:.0%}")
+        ax.set_xticks(x)
+        ax.set_xticklabels(assets)
+        ax.legend(frameon=False, fontsize=8, ncol=2)
+        _style(ax, f"alpha = {alpha:.0%}", "", "Observed breach rate (%)")
+    fig.suptitle(title, fontsize=13, fontweight="bold", x=0.01, ha="left")
+    fig.tight_layout()
+    return fig
+
+
+def plot_walkforward_regime(results: dict, alpha: float = 0.05,
+                            title: str = "Per-year breach rate: selected vs baseline"
+                            ) -> Figure:
+    """Per-fold (calendar-year) breach rate, frozen vs baseline, one panel per
+    asset.
+
+    Surfaces *where* the selected spec helps: a year whose baseline bar towers
+    over the nominal line while the frozen bar sits near it is a regime in which
+    the symmetric-t model under-covered the tail.
+    """
+    assets = list(results)
+    fig, axes = plt.subplots(1, len(assets), figsize=(4.6 * len(assets), 4.2),
+                             squeeze=False, sharey=True)
+    width = 0.38
+    for ax, asset in zip(axes.ravel(), assets):
+        r = results[asset]
+        froz = r.per_fold_breach_rate[alpha]
+        base = r.per_fold_breach_rate_baseline[alpha]
+        years = list(froz)
+        x = np.arange(len(years))
+        ax.bar(x - width / 2, [base[y] * 100 for y in years], width,
+               label="baseline", color=_C["muted"], zorder=3)
+        ax.bar(x + width / 2, [froz[y] * 100 for y in years], width,
+               label="frozen", color=_C["primary"], zorder=3)
+        ax.axhline(alpha * 100, color=_C["bad"], linestyle="--", linewidth=1.2,
+                   zorder=4)
+        ax.set_xticks(x)
+        ax.set_xticklabels(years, rotation=45, ha="right")
+        ax.legend(frameon=False, fontsize=8)
+        _style(ax, asset, "", "Breach rate (%)" if asset == assets[0] else "")
+    fig.suptitle(f"{title} (alpha = {alpha:.0%})", fontsize=13,
+                 fontweight="bold", x=0.01, ha="left")
+    fig.tight_layout()
+    return fig
+
+
+def plot_walkforward_selection(results: dict,
+                               title: str = "BIC-selected specification by fold"
+                               ) -> Figure:
+    """Grid of the BIC-selected specification for each asset and OOS year.
+
+    Cell colour encodes the chosen innovation distribution; the text is the full
+    spec label. A row of one colour means the distribution choice was stable
+    across every regime.
+    """
+    assets = list(results)
+    years = [f.year for f in results[assets[0]].folds]
+    dists = sorted({f.selected_bic.dist
+                    for a in assets for f in results[a].folds},
+                   key=lambda d: list(_DIST_COLOUR).index(d))
+    dist_idx = {d: i for i, d in enumerate(dists)}
+    from matplotlib.colors import ListedColormap
+    cmap = ListedColormap([_DIST_COLOUR[d] for d in dists])
+
+    mat = np.zeros((len(assets), len(years)))
+    labels = [[""] * len(years) for _ in assets]
+    for i, a in enumerate(assets):
+        for j, f in enumerate(results[a].folds):
+            mat[i, j] = dist_idx[f.selected_bic.dist]
+            labels[i][j] = f.selected_bic.label
+
+    fig, ax = plt.subplots(figsize=(1.5 * len(years) + 1.5, 0.9 * len(assets) + 1.5))
+    ax.imshow(mat, cmap=cmap, aspect="auto", vmin=-0.5, vmax=len(dists) - 0.5)
+    ax.set_xticks(range(len(years)))
+    ax.set_xticklabels(years)
+    ax.set_yticks(range(len(assets)))
+    ax.set_yticklabels(assets)
+    for i in range(len(assets)):
+        for j in range(len(years)):
+            ax.text(j, i, labels[i][j], ha="center", va="center", fontsize=8,
+                    color="white", fontweight="bold")
+    handles = [plt.Rectangle((0, 0), 1, 1, color=_DIST_COLOUR[d]) for d in dists]
+    ax.legend(handles, dists, frameon=False, fontsize=9,
+              loc="upper left", bbox_to_anchor=(1.01, 1.0), title="distribution")
+    _style(ax, title, "OOS year", "")
+    ax.grid(False)
+    fig.tight_layout()
+    return fig
